@@ -1,9 +1,13 @@
 name: Make TWRP Device
 
+# Ensure workflow can create releases/artifacts
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
     inputs:
-      IMG_URL:    
+      IMG_URL:
         description: 'IMG_URL'
         required: true
         default: ''
@@ -12,29 +16,63 @@ jobs:
   build:
     if: github.event.repository.owner.id == github.event.sender.id
     runs-on: ubuntu-22.04
-    
+
     steps:
     - name: Check Out
-      uses: actions/checkout@main
-      
+      uses: actions/checkout@v4
+
     - name: Prepare the environment
       run: |
+        set -euo pipefail
         sudo apt update
-        sudo apt -y install python python3 python-pip python3-pip cpio wget
+        # install tools we need: aria2 for download, zip for packaging
+        sudo apt -y install python3 python3-pip cpio wget aria2 zip
+        pip3 install --upgrade pip
         pip3 install twrpdtgen
-        mkdir dt
-      
+        mkdir -p dt
+
     - name: Download boot or recovery img
       run: |
-        aria2c "${{ github.event.inputs.IMG_URL }}"
-        ls
-      
-    - name: Start build
+        set -euo pipefail
+        echo "Downloading: ${{ github.event.inputs.IMG_URL }}"
+        # use aria2c if available; fallback to wget
+        if command -v aria2c >/dev/null 2>&1; then
+          aria2c -x 4 -s 4 "${{ github.event.inputs.IMG_URL }}"
+        else
+          wget -q --show-progress "${{ github.event.inputs.IMG_URL }}"
+        fi
+        echo "Downloaded files in workspace:"
+        ls -la
+
+    - name: Verify IMG exists
       run: |
+        shopt -s nullglob || true
+        imgs=( *.img *.img.gz *.img.xz )
+        if [ ${#imgs[@]} -eq 0 ]; then
+          echo "No image files (*.img) found in workspace. Aborting."
+          echo "Files present:"
+          ls -la
+          exit 1
+        else
+          echo "Found image(s): ${imgs[*]}"
+        fi
+
+    - name: Start build (generate device tree)
+      run: |
+        set -euo pipefail
         python3 -m twrpdtgen -o dt/ *.img
+
     - name: ZIP device tree
       run: |
-        zip -r DeviceTree.zip ./dt
+        set -euo pipefail
+        zip -r DeviceTree.zip dt
+
+    - name: Upload artifact (Actions)
+      uses: actions/upload-artifact@v4
+      with:
+        name: DeviceTree-${{ github.run_id }}
+        path: DeviceTree.zip
+
     - name: Upload to Release
       uses: softprops/action-gh-release@v1
       with:
